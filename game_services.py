@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-from protos import replay_buffer_pb2
+import replay_buffer_pb2
 from game import GameHistory
 from utils import to_bytes_dict, from_bytes_dict
 

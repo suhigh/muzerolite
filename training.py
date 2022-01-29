@@ -1,13 +1,15 @@
 import re
+import time
+
 import tensorflow as tf
+from tensorflow.keras import Model
 
 # For type annotations
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 
 from config import MuZeroConfig
 from network import Network
 from replay_buffer import ReplayBuffer
-from replay_buffer_services import RemoteReplayBuffer
 
 
 def scale_gradient(tensor: tf.Tensor, scale: tf.Tensor) -> tf.Tensor:
@@ -22,7 +24,7 @@ def build_unrolled_model(config: MuZeroConfig, network: Network) -> tf.keras.Mod
 
     observation = tf.keras.Input(shape=network.state_preprocessing.input_shape[1:],
                                  name=config.network_config.OBSERVATION)
-    unroll_actions = tf.keras.Input(shape=(config.training_config.num_unroll_steps, ),
+    unroll_actions = tf.keras.Input(shape=(config.training_config.num_unroll_steps,),
                                     name=config.network_config.UNROLL_ACTIONS)
     hidden_state, value, policy_logits = network.initial_inference_model(observation)
 
@@ -53,19 +55,25 @@ def build_unrolled_model(config: MuZeroConfig, network: Network) -> tf.keras.Mod
 
 class MuZeroCallback(tf.keras.callbacks.Callback):
     def __init__(self, network: Network, saved_models_path: str,
-                 checkpoint_manager: Optional[tf.train.CheckpointManager]) -> None:
+                 checkpoint_manager: Optional[tf.train.CheckpointManager],
+                 wait_to_play: bool = True, epoch_cnt: int = 0) -> None:
         super().__init__()
         self.network: Network = network
         self.saved_models_path: str = saved_models_path
         self.checkpoint_manager: Optional[tf.train.CheckpointManager] = checkpoint_manager
+        self.wait_to_play = wait_to_play
+        self.epoch_cnt = epoch_cnt
 
     def on_epoch_end(self, epoch: int, logs: Dict[str, float] = None) -> None:
         self.network.save_tfx_models(self.saved_models_path)
+        self.epoch_cnt += 1
         print(
             f'Saved network with {self.network.training_steps()} steps to {self.saved_models_path}')
         if self.checkpoint_manager:
             self.checkpoint_manager.save()
             print(f'Saved checkpoint to {self.checkpoint_manager.latest_checkpoint}')
+        if self.wait_to_play and self.epoch_cnt <= 100:
+            time.sleep(300)
 
     def on_train_batch_end(self, batch: int, logs: Dict[str, float] = None) -> None:
         self.network.steps.assign_add(1)
@@ -107,11 +115,11 @@ class LossLoggerCallback(tf.keras.callbacks.Callback):
 
 
 class ReplayBufferLoggerCallback(tf.keras.callbacks.Callback):
-    def __init__(self, network: Network, replay_buffer: Union[ReplayBuffer, RemoteReplayBuffer],
+    def __init__(self, network: Network, replay_buffer: ReplayBuffer,
                  replay_buffer_loginterval: int, writer: tf.summary.SummaryWriter) -> None:
         super().__init__()
         self.network: Network = network
-        self.replay_buffer: Union[ReplayBuffer, RemoteReplayBuffer] = replay_buffer
+        self.replay_buffer: ReplayBuffer = replay_buffer
         self.replay_buffer_loginterval: int = replay_buffer_loginterval
         self.writer: tf.summary.SummaryWriter = writer
         self.network_to_log: Optional[int] = None
@@ -158,11 +166,10 @@ def train_network(
         config: MuZeroConfig,
         network: Network,
         optimizer: tf.keras.optimizers.Optimizer,
-        replay_buffer: Union[ReplayBuffer, RemoteReplayBuffer],
+        replay_buffer: ReplayBuffer,
         saved_models_path: str,
         writer: Optional[tf.summary.SummaryWriter] = None,
         checkpoint_manager: Optional[tf.train.CheckpointManager] = None) -> Dict[str, List[float]]:
-
     replay_buffer_loginterval = config.training_config.replay_buffer_loginterval
     unrolled_model = build_unrolled_model(config, network)
     unrolled_model.compile(
@@ -177,7 +184,9 @@ def train_network(
             config.network_config.UNROLLED_POLICY_LOGITS: 1.0
         },
         optimizer=optimizer,
-        steps_per_execution=config.training_config.steps_per_execution)
+        steps_per_execution=config.training_config.steps_per_execution,
+        metrics=["mae", "acc"]
+    )
 
     dataset = replay_buffer.as_dataset(batch_size=config.training_config.batch_size)
 
@@ -202,3 +211,5 @@ def train_network(
                                  steps_per_epoch=config.training_config.checkpoint_interval,
                                  callbacks=callbacks)
     return history.history
+
+

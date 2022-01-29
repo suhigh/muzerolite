@@ -15,7 +15,7 @@ from muzero_types import State, Value, Action, Observation, Player
 
 def make_config() -> MuZeroConfig:
     game_config = GameConfig(name='TicTacToe',
-                             environment_class=TicTacToeEnvironment,
+                             environment_class=StepUpEnvironment,
                              environment_parameters={},
                              action_space_size=9,
                              num_players=2,
@@ -43,17 +43,21 @@ def make_config() -> MuZeroConfig:
 
     training_config = TrainingConfig(optimizer=tf.keras.optimizers.Adam(),
                                      batch_size=128,
-                                     training_steps=int(5e4),
+                                     training_steps=int(1e5),
                                      checkpoint_interval=int(5e2),
                                      replay_buffer_loginterval=50,
-                                     num_unroll_steps=2,
+                                     num_unroll_steps=5,
                                      td_steps=9,
-                                     steps_per_execution=1
+                                     steps_per_execution=1,
+                                     lr_init=0.1,
+                                     lr_decay_rate=0.1,
+                                     lr_decay_steps=5e4,
+                                     momentum=0.9
                                      )
 
     reward_config = ScalarConfig(known_bounds=KnownBounds(minv=Value(0.0), maxv=Value(1.0)),
                                  support_size=None,
-                                 loss_decay=0.0)
+                                 loss_decay=0.5)
 
     value_config = ScalarConfig(known_bounds=KnownBounds(minv=None, maxv=Value(1.0)),
                                 support_size=None,
@@ -68,15 +72,15 @@ def make_config() -> MuZeroConfig:
                         reward_config=reward_config)
 
 
-class TicTacToeEnvironment(Environment):
+class StepUpEnvironment(Environment):
     """
-    The environment class of tic-tac-toe.
+    The environment class of 升级.
     """
     NO_REWARD: Value = Value(0.0)
     WINNING_MOVE: Value = Value(1.0)
 
     def __init__(self) -> None:
-        super().__init__(action_space_size=9, num_players=2)
+        super().__init__(action_space_size=9, num_players=4)
 
         # Game state
         self.board: Optional[np.ndarray] = None  # numpy array of shape (3,3), -1 if empty or player_id if filled

@@ -7,10 +7,12 @@ Observation = NewType('Observation', tf.Tensor)
 Player = NewType('Player', int)
 Action = NewType('Action', int)
 
+
 class State(NamedTuple):
     observation: Observation
     to_play: Player
     legal_actions: List[Action]
+
 
 Policy = NewType('Policy', tf.Tensor)
 ObservationBatch = NewType('ObservationBatch', tf.Tensor)

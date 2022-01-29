@@ -53,6 +53,7 @@ class Game:
         self.history.observations.append(self.state.observation)
         self.history.to_plays.append(self.state.to_play)
         self.ended: bool = False
+        self.debug: bool = False
 
     def to_play(self) -> Player:
         return self.state.to_play
@@ -69,7 +70,14 @@ class Game:
         self.history.to_plays.append(self.state.to_play)
         self.history.actions.append(action)
         self.history.rewards.append(reward)
+        # print(self.history.observations)
+        # print(f'players: {self.history.to_plays}')
+        # print(f'reward: {self.history.rewards}')
+        if self.debug:
+            print(self.environment)
 
     def store_search_statistics(self, value: Value, policy: Policy) -> None:
         self.history.root_values.append(value)
+        # print(f'root value:{value}')
         self.history.policies.append(policy)
+        # print(f'policy: {policy}')

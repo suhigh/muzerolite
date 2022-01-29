@@ -86,6 +86,10 @@ class TrainingConfig:
     num_unroll_steps: int
     td_steps: int
     steps_per_execution: int
+    # lr_init: float
+    # lr_decay_rate: float
+    # lr_decay_steps: int
+    # momentum: float
 
 
 @dataclass

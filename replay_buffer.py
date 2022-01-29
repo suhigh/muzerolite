@@ -1,6 +1,7 @@
 import random
 import tensorflow as tf
 from threading import RLock
+import pickle
 
 from game_services import save_games, load_games
 from utils import RollingMean
@@ -57,11 +58,13 @@ class ReplayBuffer:
 
     def save_games(self, filepath: str) -> None:
         with self.buffer_lock:
-            save_games(self.buffer, filepath)
+            with open(filepath, 'wb') as f:
+                pickle.dump(self.buffer, f)
 
     def load_games(self, filepath: str) -> None:
-        for history in load_games(filepath):
-            self.save_history(history)
+        with open(filepath, 'rb') as f:
+            history = pickle.load(f)
+            self.buffer = history
 
     def compute_target_value(self, history: GameHistory, index: int) -> Value:
         bootstrap_index = index + self.td_steps

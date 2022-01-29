@@ -141,8 +141,13 @@ class NetworkOutput:
 
     def masked_policy(self, actions: List[Action]) -> np.ndarray:
         policy_mask = np.zeros_like(self.policy_logits.numpy())
+        print(f'policy_mask : {policy_mask}')
         policy_mask[actions] = 1
+        print(f'policy_mask : {policy_mask}')
+        masked_policy = tf.boolean_mask(tf.convert_to_tensor(np.exp(self.policy_logits.numpy())), policy_mask)
+        print(f'masked: {masked_policy}')
         policy = np.exp(self.policy_logits.numpy()) * policy_mask
+        print(f'policy: {policy}')
         return policy / policy.sum()
 
 
