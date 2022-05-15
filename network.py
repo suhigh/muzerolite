@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras import Model
+from abc import ABC, abstractmethod
 
 from config import MuZeroConfig
 from utils import scalar_to_support
@@ -139,16 +141,10 @@ class NetworkOutput:
                                                                                               self.value,
                                                                                               self.policy_logits)
 
-    def masked_policy(self, actions: List[Action]) -> np.ndarray:
-        policy_mask = np.zeros_like(self.policy_logits.numpy())
-        print(f'policy_mask : {policy_mask}')
-        policy_mask[actions] = 1
-        print(f'policy_mask : {policy_mask}')
-        masked_policy = tf.boolean_mask(tf.convert_to_tensor(np.exp(self.policy_logits.numpy())), policy_mask)
-        print(f'masked: {masked_policy}')
-        policy = np.exp(self.policy_logits.numpy()) * policy_mask
-        print(f'policy: {policy}')
-        return policy / policy.sum()
+    def masked_policy(self, actions: List[Action]) -> tf.Tensor:
+        masked_policy = tf.math.exp(tf.gather(self.policy_logits, indices=actions))
+        policy_sum = tf.reduce_sum(masked_policy)
+        return (masked_policy/policy_sum).numpy()
 
 
 class BatchNetworkOutput:
@@ -179,9 +175,58 @@ class BatchNetworkOutput:
                 zip(self.batch_hidden_state, batch_reward_scalar, batch_value_scalar, self.batch_policy_logits)]
 
 
-class Network:
+class Network(ABC):
     """
-    Base class for all of MuZero neural networks.
+        Base class for all of MuZero neural networks.
+    """
+
+    def training_steps(self) -> int:
+        return 0
+
+    @abstractmethod
+    def initial_inference(self, observation: ObservationBatch) -> BatchNetworkOutput:
+        pass
+
+    @abstractmethod
+    def recurrent_inference(self, hidden_state: ObservationBatch, action: ActionBatch) -> BatchNetworkOutput:
+        pass
+
+
+class ReferenceNetwork(Network):
+
+    def __init__(self, config: MuZeroConfig, initial_model: Model, recurrent_model: Model, training_steps: int):
+        self.config = config
+        self.__initial_inference_model = initial_model
+        self.__recurrent_inference_model = recurrent_model
+        self._training_steps = training_steps
+
+    def recurrent_inference(self, hidden_state: ObservationBatch, action: ActionBatch) -> BatchNetworkOutput:
+        hidden_state, reward, value, policy_logits = self.__recurrent_inference_model((hidden_state, action), training=False)
+
+        return BatchNetworkOutput(batch_hidden_state=ObservationBatch(hidden_state),
+                                  batch_reward=ValueBatch(reward),
+                                  batch_value=ValueBatch(value),
+                                  batch_policy_logits=PolicyBatch(policy_logits),
+                                  reward_to_scalar=self.config.reward_config.to_scalar,
+                                  value_to_scalar=self.config.value_config.to_scalar)
+
+    def initial_inference(self, observation: ObservationBatch) -> BatchNetworkOutput:
+        hidden_state, value, policy_logits = self.__initial_inference_model(observation, training=False)
+
+        return BatchNetworkOutput(batch_hidden_state=ObservationBatch(hidden_state),
+                                  batch_reward=None,
+                                  batch_value=ValueBatch(value),
+                                  batch_policy_logits=PolicyBatch(policy_logits),
+                                  reward_to_scalar=self.config.reward_config.to_scalar,
+                                  value_to_scalar=self.config.value_config.to_scalar)
+
+    def training_steps(self) -> int:
+        return self._training_steps
+
+
+class MuProverNetwork(Network):
+    """
+    Base class for all of MuProver neural networks, for training or evaluate
     """
     def __init__(self,
                  config: MuZeroConfig,
@@ -265,10 +310,11 @@ class Network:
         self.checkpoint.read(checkpoint_prefix)
 
     def save_tfx_models(self, saved_models_path: str) -> None:
+        epoch = int(self.training_steps()/self.config.training_config.checkpoint_interval)
         self.initial_inference_model.save(
-            os.path.join(saved_models_path, self.config.network_config.INITIAL_INFERENCE, str(self.training_steps())))
+            os.path.join(saved_models_path, self.config.network_config.INITIAL_INFERENCE, str(epoch)))
         self.recurrent_inference_model.save(
-            os.path.join(saved_models_path, self.config.network_config.RECURRENT_INFERENCE, str(self.training_steps())))
+            os.path.join(saved_models_path, self.config.network_config.RECURRENT_INFERENCE, str(epoch)))
 
     def summary(self) -> None:
         self.representation.summary()

@@ -1,15 +1,20 @@
 import re
 import time
 
+import grpc
+
 import tensorflow as tf
-from tensorflow.keras import Model
 
 # For type annotations
 from typing import List, Dict, Optional
+import random
 
 from config import MuZeroConfig
-from network import Network
+from network import MuProverNetwork, Network
 from replay_buffer import ReplayBuffer
+from game import GameHistory
+from shared_storage import SharedStorage
+from protos import shared_storage_pb2_grpc, shared_storage_pb2
 
 
 def scale_gradient(tensor: tf.Tensor, scale: tf.Tensor) -> tf.Tensor:
@@ -19,7 +24,7 @@ def scale_gradient(tensor: tf.Tensor, scale: tf.Tensor) -> tf.Tensor:
     return tensor * scale + tf.stop_gradient(tensor) * (tf.ones_like(scale) - scale)
 
 
-def build_unrolled_model(config: MuZeroConfig, network: Network) -> tf.keras.Model:
+def build_unrolled_model(config: MuZeroConfig, network: MuProverNetwork) -> tf.keras.Model:
     gradient_scale = tf.constant(1 / config.training_config.num_unroll_steps)
 
     observation = tf.keras.Input(shape=network.state_preprocessing.input_shape[1:],
@@ -54,26 +59,28 @@ def build_unrolled_model(config: MuZeroConfig, network: Network) -> tf.keras.Mod
 
 
 class MuZeroCallback(tf.keras.callbacks.Callback):
-    def __init__(self, network: Network, saved_models_path: str,
-                 checkpoint_manager: Optional[tf.train.CheckpointManager],
-                 wait_to_play: bool = True, epoch_cnt: int = 0) -> None:
+    def __init__(self, training_network: MuProverNetwork, saved_models_path: str,
+                 checkpoint_manager: Optional[tf.train.CheckpointManager]) -> None:
         super().__init__()
-        self.network: Network = network
+        self.network: MuProverNetwork = training_network
         self.saved_models_path: str = saved_models_path
         self.checkpoint_manager: Optional[tf.train.CheckpointManager] = checkpoint_manager
-        self.wait_to_play = wait_to_play
-        self.epoch_cnt = epoch_cnt
+        channel = grpc.insecure_channel(training_network.config.training_config.client_storage_ip_port)
+        self.stub = shared_storage_pb2_grpc.ModelAgentStub(channel)
 
     def on_epoch_end(self, epoch: int, logs: Dict[str, float] = None) -> None:
-        self.network.save_tfx_models(self.saved_models_path)
-        self.epoch_cnt += 1
-        print(
-            f'Saved network with {self.network.training_steps()} steps to {self.saved_models_path}')
+        if epoch % 50 == 0 or epoch == int(self.network.config.training_config.training_steps/self.network.config.training_config.checkpoint_interval) - 1:
+            self.network.save_tfx_models(self.saved_models_path)
+            print(f'Saved network with {self.network.training_steps()} steps to {self.saved_models_path}')
+
         if self.checkpoint_manager:
             self.checkpoint_manager.save()
             print(f'Saved checkpoint to {self.checkpoint_manager.latest_checkpoint}')
-        if self.wait_to_play and self.epoch_cnt <= 100:
-            time.sleep(300)
+            mi: shared_storage_pb2.ModelInfo = shared_storage_pb2.ModelInfo()
+            mi.path = self.checkpoint_manager.latest_checkpoint
+            # mi.time = time.time()
+            # mi.reanalyse_start = True
+            self.stub.update_current_generated_model(mi)
 
     def on_train_batch_end(self, batch: int, logs: Dict[str, float] = None) -> None:
         self.network.steps.assign_add(1)
@@ -162,9 +169,69 @@ class ReplayBufferLoggerCallback(tf.keras.callbacks.Callback):
         self.network_to_log = self.network.training_steps() - self.params['steps']
 
 
+class GenerationStats:
+    total_states: int = 0
+    max_episode_length: int = 0
+    mean_episode_length: Optional[float] = None
+
+    def episode_length(self):
+        if self.mean_episode_length is None:
+            return self.max_episode_length
+        else:
+            return self.mean_episode_length
+
+
+def bernoulli(p: float) -> bool:
+    return random.random() < p
+
+
+class ActingStats (object):
+    def __init__(self, config: MuZeroConfig):
+        self._reanalyse_fraction = config.reanalyse_buffer_config.reanalyse_fraction
+        self._fresh = GenerationStats()
+        self._reanalysed = GenerationStats()
+        self.start_training = False
+
+    def state_added(self, game_history: GameHistory):
+        if not self.start_training:
+            return
+        stats = self._get_stats(game_history.is_reanalyse())
+        stats.total_states += 1
+        stats.max_episode_length = max(stats.max_episode_length, len(game_history))
+
+    def game_finished(self, game_history: GameHistory):
+        if not self.start_training:
+            return
+        stats = self._get_stats(game_history.is_reanalyse())
+        if stats.mean_episode_length is None:
+            stats.mean_episode_length = len(game_history)
+        else:
+            alpha = 0.01
+            stats.mean_episode_length = alpha * len(game_history) + (1 - alpha) * stats.mean_episode_length
+
+    def should_reanalyse(self) -> bool:  # Overshoot slightly to approach desired fraction .
+        if not self.start_training:
+            return False
+
+        total_states = self._reanalysed.total_states + self._fresh.total_states
+        if total_states == 0:
+            return False
+        actual = self._reanalysed.total_states / total_states
+        target = self._reanalyse_fraction + (self._reanalyse_fraction - actual) / 2
+        target = max(0., min(1., target))
+        # Correct for reanalysing only part of full episodes .
+        fresh_fraction = 1. - target
+        parts_per_episode = max(1., self._fresh.episode_length()/self._reanalysed.episode_length() if self._reanalysed.episode_length() != 0. else 1.)
+        fresh_fraction /= parts_per_episode
+        return bernoulli(1. - fresh_fraction)
+
+    def _get_stats(self, reanalysed: bool) -> GenerationStats:
+        return self._reanalysed if reanalysed else self._fresh
+
+
 def train_network(
         config: MuZeroConfig,
-        network: Network,
+        network: MuProverNetwork,
         optimizer: tf.keras.optimizers.Optimizer,
         replay_buffer: ReplayBuffer,
         saved_models_path: str,
@@ -189,8 +256,8 @@ def train_network(
     )
 
     dataset = replay_buffer.as_dataset(batch_size=config.training_config.batch_size)
-
-    muzero_callback = MuZeroCallback(network=network,
+    shared_storage = SharedStorage(network)
+    muzero_callback = MuZeroCallback(shared_storage=shared_storage,
                                      saved_models_path=saved_models_path,
                                      checkpoint_manager=checkpoint_manager)
     callbacks = [muzero_callback]
@@ -211,5 +278,3 @@ def train_network(
                                  steps_per_epoch=config.training_config.checkpoint_interval,
                                  callbacks=callbacks)
     return history.history
-
-

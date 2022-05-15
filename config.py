@@ -74,6 +74,17 @@ class ReplayBufferConfig:
 
 
 @dataclass
+class ReanalyseBufferConfig:
+    """reanalyse buffer config
+
+    capacity: the number of most recent games from which replays are sampled
+
+    """
+    capacity: int
+    reanalyse_fraction: float
+
+
+@dataclass
 class TrainingConfig:
     """
     Training configuration.
@@ -86,10 +97,18 @@ class TrainingConfig:
     num_unroll_steps: int
     td_steps: int
     steps_per_execution: int
-    # lr_init: float
-    # lr_decay_rate: float
-    # lr_decay_steps: int
-    # momentum: float
+    lr_init: float
+    lr_decay_rate: float
+    lr_decay_steps: int
+    momentum: float
+    path: str
+    start_epoch_cnt: int
+    server_storage_ip_port: str
+    server_training_ip_port: str
+    client_storage_ip_port: str
+    client_training_ip_port: str
+    interleave_range: int
+    waiting_replay_window: int
 
 
 @dataclass
@@ -104,6 +123,10 @@ class MCTSConfig:
     temperature: float
     freezing_moves: int
     default_value: Value
+    sampled: bool
+    sampling_temperature: float
+    sampling_k: int
+    sampling_noise: float
 
 
 class NetworkConfig:
@@ -132,6 +155,7 @@ class NetworkConfig:
 class MuZeroConfig:
     def __init__(self, game_config: GameConfig,
                  replay_buffer_config: ReplayBufferConfig,
+                 reanalyse_buffer_config: ReanalyseBufferConfig,
                  training_config: TrainingConfig,
                  mcts_config: MCTSConfig,
                  network_config: NetworkConfig,
@@ -139,6 +163,7 @@ class MuZeroConfig:
                  value_config: ScalarConfig) -> None:
         self.game_config: GameConfig = game_config
         self.replay_buffer_config: ReplayBufferConfig = replay_buffer_config
+        self.reanalyse_buffer_config: ReanalyseBufferConfig = reanalyse_buffer_config
         self.training_config: TrainingConfig = training_config
         self.mcts_config: MCTSConfig = mcts_config
         self.network_config: NetworkConfig = network_config

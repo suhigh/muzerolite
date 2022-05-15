@@ -5,20 +5,24 @@ from muzero_types import State, Observation, Player, Action, Value, Policy, Valu
 from environment import Environment
 
 
-class GameHistory:
+class GameHistory(object):
     """
     Book-keeping class for completed games.
     Restricted to 1-player games with no intermediate rewards for MuProver.
     """
 
     def __init__(self) -> None:
-        self.observations: List[Observation] = []
-        self.to_plays: List[Player] = []
+        # self.observations: List[Observation] = []
+        # self.to_plays: List[Player] = []
+        self.states: List[State] = []
         self.actions: List[Action] = []
         self.rewards: List[Value] = []
         self.root_values: List[Value] = []
         self.policies: List[Policy] = []
         self.metadata: Dict[str, Any] = {}
+
+        # If this history is from Reanalyse Buffer
+        self.reanalyse: bool = False
 
         # The following are only filled once within a replay buffer
         self.extended_actions: Optional[ActionBatch] = None
@@ -31,7 +35,7 @@ class GameHistory:
         """
         TODO: If necessary, stack multiple states to create an observation.
         """
-        return self.observations[index]
+        return self.states[index].observation
 
     def __repr__(self) -> str:
         return 'Game({})'.format(', '.join(map(str, self.actions)))
@@ -39,19 +43,23 @@ class GameHistory:
     def __len__(self) -> int:
         return len(self.actions)
 
+    def is_reanalyse(self) -> bool:
+        return self.reanalyse
+
 
 class Game:
     """
     A class to record episodes of interaction with an Environment.
     """
 
-    def __init__(self, environment: Environment) -> None:
+    def __init__(self, environment: Optional[Environment]) -> None:
         self.environment: Environment = environment
         self.history: GameHistory = GameHistory()
 
-        self.state: State = self.environment.reset()
-        self.history.observations.append(self.state.observation)
-        self.history.to_plays.append(self.state.to_play)
+        if environment:
+            self.state: State = self.environment.reset()
+            self.history.states.append(self.state)
+
         self.ended: bool = False
         self.debug: bool = False
 
@@ -65,14 +73,14 @@ class Game:
         return self.ended
 
     def apply(self, action: Action) -> None:
-        self.state, reward, self.ended, info = self.environment.step(action)
-        self.history.observations.append(self.state.observation)
-        self.history.to_plays.append(self.state.to_play)
-        self.history.actions.append(action)
-        self.history.rewards.append(reward)
-        # print(self.history.observations)
-        # print(f'players: {self.history.to_plays}')
-        # print(f'reward: {self.history.rewards}')
+        if self.environment:
+            self.state, reward, self.ended, info = self.environment.step(action)
+            self.history.states.append(self.state)
+            self.history.actions.append(action)
+            self.history.rewards.append(reward)
+            # print(self.history.observations)
+            # print(f'players: {self.history.to_plays}')
+            # print(f'reward: {self.history.rewards}')
         if self.debug:
             print(self.environment)
 
@@ -81,3 +89,21 @@ class Game:
         # print(f'root value:{value}')
         self.history.policies.append(policy)
         # print(f'policy: {policy}')
+
+
+# class StoredGame(Game):
+#     """ A stored Game that can be used for reanalyse ."""
+#     def __init__(self, game: Game):
+#         super().__init__(game.action_space_size, game.discount, environment=None)
+#         self._stored_history = game.history
+#
+#     def terminal(self) -> bool:
+#         return not self._stored_history.actions
+#
+#     def apply(self, action: Action):
+#         # Ignore the action , instead replay the stored data .
+#         del action
+#         self.history.observations.append(self._stored_history.observations.pop(0))
+#         self.history.to_plays.append(self._stored_history.to_plays.pop(0))
+#         self.history.rewards.append(self._stored_history.rewards.pop(0))
+#         self.history.actions.append(self._stored_history.actions.pop(0))

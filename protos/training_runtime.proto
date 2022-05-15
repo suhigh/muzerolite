@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package tensorflow.muprover;
+
+import "tensorflow/core/framework/tensor.proto";
+
+service TrainingRuntime{
+  rpc SaveHistory(GameHistory) returns (NumGamesResponse) {}
+  rpc SaveMultipleHistory(stream GameHistory) returns (NumGamesResponse) {}
+}
+
+message NumGamesResponse{
+  int32 num_games = 1;
+}
+
+message GameHistory{
+  repeated State states = 1;
+  repeated int32 actions = 2;
+  repeated float rewards = 3;
+  repeated float root_values = 4;
+  repeated TensorProto policies = 5;
+  map<string, bytes> metadata = 6;
+  bool reanalyse = 7;
+}
+
+message State{
+  TensorProto observation = 1;
+  int32 to_play = 2;
+  repeated int32 legal_actions = 3;
+}

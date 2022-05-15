@@ -1,15 +1,16 @@
 import numpy as np
 import tensorflow as tf
+import os
+import logging
 
-from config import MuZeroConfig, GameConfig, ReplayBufferConfig, MCTSConfig, NetworkConfig, TrainingConfig, ScalarConfig
+from config import MuZeroConfig, GameConfig, ReplayBufferConfig, ReanalyseBufferConfig, MCTSConfig, NetworkConfig, TrainingConfig, ScalarConfig
 from utils import KnownBounds
 from environment import Environment
 from exceptions import MuZeroEnvironmentError
-from network import Network, one_hot_tensor_encoder, dummy_model
+from network import MuProverNetwork, one_hot_tensor_encoder, dummy_model
 
 # For type annotations
 from typing import Optional, Tuple, List
-
 from muzero_types import State, Value, Action, Observation, Player
 
 
@@ -22,17 +23,26 @@ def make_config() -> MuZeroConfig:
                              discount=1.0
                              )
 
-    replay_buffer_config = ReplayBufferConfig(window_size=int(1e4),
+    replay_buffer_config = ReplayBufferConfig(window_size=int(2e4),
                                               prefetch_buffer_size=10
                                               )
 
+    reanalyse_buffer_config = ReanalyseBufferConfig(
+        capacity=int(1e4),
+        reanalyse_fraction=0.60
+    )
+
     mcts_config = MCTSConfig(max_moves=9,
-                             root_dirichlet_alpha=1.0,
+                             root_dirichlet_alpha=0.25,
                              root_exploration_fraction=0.25,
                              num_simulations=20,
-                             temperature=1.0,
+                             temperature=0.8,
                              freezing_moves=9,
-                             default_value=Value(0.0)
+                             default_value=Value(0.0),
+                             sampled=True,
+                             sampling_temperature=8.0,
+                             sampling_k=5,
+                             sampling_noise=0.6
                              )
 
     network_config = NetworkConfig(network_class=TicTacToeNetwork,
@@ -43,13 +53,29 @@ def make_config() -> MuZeroConfig:
 
     training_config = TrainingConfig(optimizer=tf.keras.optimizers.Adam(),
                                      batch_size=128,
-                                     training_steps=int(1e3),
+                                     training_steps=int(5e4),
+                                     # training_steps=int(2e3),
                                      checkpoint_interval=int(5e2),
                                      replay_buffer_loginterval=50,
-                                     num_unroll_steps=2,
-                                     td_steps=9,
-                                     steps_per_execution=1
+                                     num_unroll_steps=3,
+                                     td_steps=6,
+                                     steps_per_execution=1,
+                                     lr_init=0.03,
+                                     lr_decay_rate=0.9,
+                                     lr_decay_steps=int(50000),
+                                     momentum=0.9,
+                                     # path='/home/wjb/ttttraining/',
+                                     path='F:/muzerottt16/',
+                                     start_epoch_cnt=1,
+                                     server_storage_ip_port='[::]:50050',
+                                     server_training_ip_port='[::]:50051',
+                                     client_training_ip_port='127.0.0.1:50051',
+                                     client_storage_ip_port='127.0.0.1:50050',
+                                     interleave_range=2,
+                                     waiting_replay_window=1500
                                      )
+    # training_config.optimizer = tf.keras.optimizers.SGD(learning_rate=training_config.lr_init, momentum=training_config.momentum)
+    training_config.optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
     reward_config = ScalarConfig(known_bounds=KnownBounds(minv=Value(0.0), maxv=Value(1.0)),
                                  support_size=None,
@@ -61,6 +87,7 @@ def make_config() -> MuZeroConfig:
 
     return MuZeroConfig(game_config=game_config,
                         replay_buffer_config=replay_buffer_config,
+                        reanalyse_buffer_config=reanalyse_buffer_config,
                         mcts_config=mcts_config,
                         training_config=training_config,
                         network_config=network_config,
@@ -141,14 +168,14 @@ class TicTacToeEnvironment(Environment):
         return self._get_state(), reward, self.ended, {}
 
     def reset(self) -> State:
-        self.board = -np.ones(shape=(3, 3), dtype=np.int)
+        self.board = -np.ones(shape=(3, 3), dtype=np.int32)
         self.steps = 0
         self.ended = False
         self.to_play = 0
         return self._get_state()
 
 
-class TicTacToeNetwork(Network):
+class TicTacToeNetwork(MuProverNetwork):
     """
     Neural networks for tic-tac-toe game.
     """
@@ -218,3 +245,39 @@ class TicTacToeNetwork(Network):
                          prediction=random_tictactoe_prediction,
                          state_action_encoder=one_hot_tensor_encoder(state_shape=(3, 3), action_space_size=9),
                          state_preprocessing=random_tictactoe_state_preprocessing)
+
+
+def get_initial_network(config: MuZeroConfig) -> MuProverNetwork:
+    start_ckpt = 'ckpt-' + str(config.training_config.start_epoch_cnt)
+
+    network = TicTacToeNetwork(config, config.network_config.network_parameters.get('regularizer'),
+                               config.network_config.network_parameters.get('hidden_state_size'),
+                               config.network_config.network_parameters.get('hidden_size'))
+
+    logging.info('representation')
+    logging.info(network.representation.input_shape)
+    logging.info(network.representation.output_shape)
+
+    logging.info('dynamics')
+    logging.info(network.dynamics.input_shape)
+    logging.info(network.dynamics.output_shape)
+
+    logging.info('prediction')
+    logging.info(network.prediction.input_shape)
+    logging.info(network.prediction.output_shape)
+
+    logging.info('state_preprocessing')
+    logging.info(network.state_preprocessing.input_shape)
+    logging.info(network.state_preprocessing.output_shape)
+
+    logging.info('recurrent_inference_model')
+    logging.info(network.recurrent_inference_model.input_shape)
+    logging.info(network.recurrent_inference_model.output_shape)
+
+    logging.info('initial_inference_model')
+    logging.info(network.initial_inference_model.input_shape)
+    logging.info(network.initial_inference_model.output_shape)
+
+    if os.path.exists(config.training_config.path + 'logs/ckpt/checkpoint'):
+        network.checkpoint.restore(config.training_config.path + 'logs/ckpt/' + start_ckpt)
+    return network

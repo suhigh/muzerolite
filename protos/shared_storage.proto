@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+message ModelInfo{
+  string path = 1;
+  float time = 2;
+  bool reanalyse_start = 3;
+}
+
+message Empty{
+
+}
+
+service ModelAgent{
+  rpc latest_model(Empty) returns (ModelInfo){};
+  rpc update_current_generated_model(ModelInfo) returns (Empty) {};
+}

@@ -1,3 +1,4 @@
+import logging
 import random
 import tensorflow as tf
 from threading import RLock
@@ -64,6 +65,7 @@ class ReplayBuffer:
         with open(filepath, 'rb') as f:
             history = pickle.load(f)
             self.buffer = history
+            self.total_games = len(self.buffer)
 
     def compute_target_value(self, history: GameHistory, index: int) -> Value:
         bootstrap_index = index + self.td_steps
@@ -86,7 +88,12 @@ class ReplayBuffer:
         history.target_rewards = self.config.reward_config.inv_to_scalar(tf.constant(target_rewards, dtype=tf.float32))
 
         # Extend target values past the terminal state using the last value
-        target_values = [self.compute_target_value(history, index) for index in range(len(history))]
+        # if the history is from the reanalyse then the target value should directly from v0, don't need to bootstrap
+        # (Muzero Unplugged - NeurIPS 2021,youtube)
+        if history.is_reanalyse():
+            target_values = history.root_values.copy()
+        else:
+            target_values = [self.compute_target_value(history, index) for index in range(len(history))]
         target_values.extend([0 for _ in range(self.num_unroll_steps+1)])
         history.target_values = self.config.value_config.inv_to_scalar(tf.constant(target_values, dtype=tf.float32))
 
@@ -151,6 +158,8 @@ class ReplayBuffer:
 
         dataset_signature = (inputs_spec, outputs_spec)
         dataset = tf.data.Dataset.from_generator(lambda: iter(self.datapoint, None), output_signature=dataset_signature)
+        # dataset_gen = tf.data.Dataset.from_generator(lambda: iter(self.datapoint, None), output_signature=dataset_signature)
+        # dataset = tf.data.Dataset.range(self.config.training_config.interleave_range).interleave(lambda _: dataset_gen, num_parallel_calls=tf.data.AUTOTUNE)
         dataset = dataset.batch(batch_size=batch_size)
         dataset = dataset.prefetch(buffer_size=self.config.replay_buffer_config.prefetch_buffer_size)
         return dataset
@@ -176,7 +185,8 @@ class ReplayBuffer:
             agent_metric = self.agents.setdefault(agent, RollingMean(name=f'Agents/{agent}', window_size=1000))
         agent_metric(game_history_in.total_value)
 
-        self.total_games += 1
+        with self.agents_lock:
+            self.total_games += 1
 
     def stats(self) -> Dict[str, Any]:
         """
